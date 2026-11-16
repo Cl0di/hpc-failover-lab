@@ -1,0 +1,5 @@
+torch>=2.2
+grpcio>=1.60
+grpcio-tools>=1.60
+prometheus-client>=0.19
+pytest>=8
