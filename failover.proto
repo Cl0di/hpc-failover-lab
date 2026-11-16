@@ -1,0 +1,72 @@
+syntax = "proto3";
+package failover;
+
+// ---- Data plane: in-memory checkpoint store on every compute node ----------
+message Chunk {
+  // First chunk of a stream carries the metadata, every chunk carries data.
+  CheckpointMeta meta = 1;
+  bytes data = 2;
+}
+message CheckpointMeta {
+  string job_id = 1;
+  uint64 version = 2;      // monotonically increasing per job
+  uint64 step = 3;         // training step captured in the checkpoint
+  uint64 size_bytes = 4;
+  string sha256 = 5;
+  string origin_node = 6;
+  bool replica = 7;        // true when pushed by a peer, false when written locally
+}
+message PutReply { bool ok = 1; string error = 2; }
+message GetRequest { string job_id = 1; uint64 version = 2; }  // version 0 = latest
+message LatestRequest { string job_id = 1; }
+message LatestReply { bool found = 1; CheckpointMeta meta = 2; }
+
+// ---- Control plane: node agent ---------------------------------------------
+message Empty {}
+message NodeStatus {
+  string node = 1;
+  bool rank_running = 2;
+  int32 rank = 3;
+  uint64 step = 4;               // last step reported by the local training rank
+  uint64 epoch_id = 5;           // job incarnation the rank belongs to
+  uint64 gpu_mem_used = 6;
+  uint64 gpu_mem_total = 7;
+  int32 rank_exit_code = 8;      // valid when rank_running == false, -999 = never ran
+}
+message StartRankRequest {
+  string job_id = 1;
+  uint64 epoch_id = 2;
+  int32 rank = 3;
+  int32 world_size = 4;
+  string master_addr = 5;        // host of rank 0
+  int32 master_port = 6;
+  string mode = 7;               // "inmem" or "legacy"
+  double ckpt_interval_s = 8;
+  string restore_addr = 9;       // inmem: agent that holds the checkpoint ("" = fresh start)
+  uint64 restore_version = 10;
+  string legacy_dir = 11;        // legacy: shared directory with on-disk checkpoints
+  uint64 total_steps = 12;
+  uint32 model_width = 13;
+}
+message Progress { uint64 epoch_id = 1; uint64 step = 2; }
+
+service NodeAgent {
+  rpc Put(stream Chunk) returns (PutReply);
+  rpc Get(GetRequest) returns (stream Chunk);
+  rpc Latest(LatestRequest) returns (LatestReply);
+  rpc Ping(Empty) returns (NodeStatus);
+  rpc StartRank(StartRankRequest) returns (PutReply);
+  rpc StopRank(Empty) returns (PutReply);
+  rpc ReportProgress(Progress) returns (Empty);
+}
+
+// ---- Control plane: coordinator --------------------------------------------
+message NodeEvent {
+  string node = 1;
+  string reporter = 2;           // which DPU raised it
+  bool alive = 3;
+  double observed_at = 4;        // unix seconds
+}
+service Coordinator {
+  rpc ReportNode(NodeEvent) returns (Empty);
+}
